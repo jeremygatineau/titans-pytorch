@@ -7,7 +7,9 @@ from titans_pytorch.memory_models import (
     MemoryAttention,
     FactorizedMemoryMLP,
     MemorySwiGluMLP,
-    GatedResidualMemoryMLP
+    GatedResidualMemoryMLP,
+    QuantizedMemoryAttention,
+    QuantizedMemoryMLP
 )
 
 from titans_pytorch.mac_transformer import (

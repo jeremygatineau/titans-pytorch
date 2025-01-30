@@ -13,7 +13,9 @@ from adam_atan2_pytorch import AdoptAtan2
 from titans_pytorch import (
     MemoryAsContextTransformer,
     MemoryMLP,
-    MemoryAttention
+    MemoryAttention,
+    QuantizedMemoryAttention,
+    QuantizedMemoryMLP
 )
 
 # constants
@@ -42,6 +44,10 @@ NEURAL_MEM_QK_NORM = True
 NEURAL_MEM_MAX_LR = 1e-1
 USE_MEM_ATTENTION_MODEL = False
 WINDOW_SIZE = 32
+USE_QUANTIZATION = True
+USE_QUANTIZATION_LOSS = False
+QUANTZIATION_CODEBOOK_SIZE = 64
+QUANTIZATION_CODEBOOK_DIM = 4
 NEURAL_MEM_SEGMENT_LEN = 4                      # set smaller for more granularity for learning rate / momentum etc
 NEURAL_MEM_BATCH_SIZE = 128                     # set smaller to update the neural memory weights more often as it traverses the sequence
 SLIDING_WINDOWS = True
@@ -52,8 +58,8 @@ NEURAL_MEM_WEIGHT_RESIDUAL = True               # learning to accept contributio
 # experiment related
 
 PROJECT_NAME = 'titans-mac-transformer'
-RUN_NAME = f'mac - {NUM_LONGTERM_MEM} longterm mems, layers {NEURAL_MEM_LAYERS}'
-WANDB_ONLINE = False # turn this on to pipe experiment to cloud
+RUN_NAME = f'Quantized mac - {NUM_LONGTERM_MEM} longterm mems, layers {NEURAL_MEM_LAYERS}'
+WANDB_ONLINE = True # turn this on to pipe experiment to cloud
 
 # perf related
 
@@ -81,19 +87,48 @@ def decode_token(token):
 def decode_tokens(tokens):
     return ''.join(list(map(decode_token, tokens)))
 
-# memory model
+def loss_with_quantizer(pred, target):
+    pred, quant_loss = pred
+    return (pred - target).pow(2).mean(dim = -1) + quant_loss
 
+# memory model
 if USE_MEM_ATTENTION_MODEL:
     neural_memory_model = MemoryAttention(
         dim = 64
     )
+    if USE_QUANTIZATION:
+        neural_memory_model = QuantizedMemoryAttention(
+            dim = MEMORY_DIM,
+            model = neural_memory_model,
+            codebook_size = QUANTZIATION_CODEBOOK_SIZE,
+            codebook_dim = QUANTIZATION_CODEBOOK_DIM
+        )
 else:
     neural_memory_model = MemoryMLP(
         dim = 64,
         depth = NEURAL_MEMORY_DEPTH
     )
-
+    if USE_QUANTIZATION:
+        neural_memory_model = QuantizedMemoryMLP(
+            dim = MEMORY_DIM,
+            depth = NEURAL_MEMORY_DEPTH,
+            codebook_size = QUANTZIATION_CODEBOOK_SIZE,
+            codebook_dim = QUANTIZATION_CODEBOOK_DIM
+        )
 # instantiate memory-as-context transformer
+
+neural_memory_kwargs = dict(
+        dim_head = MEMORY_DIM,
+        heads = MEMORY_HEADS,
+        attn_pool_chunks = STORE_ATTN_POOL_CHUNKS,
+        qk_rmsnorm = NEURAL_MEM_QK_NORM,
+        momentum = NEURAL_MEM_MOMENTUM,
+        default_step_transform_max_lr = NEURAL_MEM_MAX_LR,
+        use_accelerated_scan = USE_ACCELERATED_SCAN,
+        per_parameter_lr_modulation = MEMORY_MODEL_PER_LAYER_LEARNED_LR
+    )
+if USE_QUANTIZATION and USE_QUANTIZATION_LOSS:
+    neural_memory_kwargs['store_memory_loss_fn'] = loss_with_quantizer
 
 model = MemoryAsContextTransformer(
     num_tokens = 256,
@@ -110,6 +145,7 @@ model = MemoryAsContextTransformer(
     use_flex_attn = USE_FLEX_ATTN,
     sliding_window_attn = SLIDING_WINDOWS,
     neural_memory_model = neural_memory_model,
+<<<<<<< Updated upstream
     neural_memory_kwargs = dict(
         dim_head = 64,
         heads = 4,
@@ -121,6 +157,9 @@ model = MemoryAsContextTransformer(
         use_accelerated_scan = USE_ACCELERATED_SCAN,
         per_parameter_lr_modulation = MEMORY_MODEL_PER_LAYER_LEARNED_LR
     )
+=======
+    neural_memory_kwargs = neural_memory_kwargs
+>>>>>>> Stashed changes
 ).cuda()
 
 # prepare enwik8 data

@@ -2,9 +2,9 @@ import torch
 from torch import nn, cat
 import torch.nn.functional as F
 from torch.nn import Module, ModuleList, Parameter, ParameterList
-
+import vector_quantize_pytorch as vq
 from einops import rearrange
-
+from functools import partial
 # functions
 
 def l2norm(t):
@@ -246,3 +246,117 @@ class MemoryAttention(Module):
         ff_out = h @ ffw2
 
         return attn_out + ff_out
+
+
+class QuantizedMemoryAttention(MemoryAttention):
+    def __init__(self,
+                    dim,
+                    scale = 8.,
+                    expansion_factor = 2.,
+                    codebook_size = 64, 
+                    codebook_dim = 4
+                    ):
+        super().__init__(dim, scale, expansion_factor)
+
+        self.codebook_size = codebook_size
+        
+        # in_place_optimizer = partial(torch.optim.Adam, lr=1e-3) # maybe in place optimization
+        self.vq = vq.VectorQuantize(dim, codebook_size, codebook_dim)#, in_place_optimizer)
+        
+
+    def forward(self, x):
+        wq, wk, wv, ffw1, ffw2 = self.weights
+
+        q = l2norm(x @ wq)
+        k = l2norm(x @ wk)
+        v = x @ wv
+        # quantize keys and values
+        k, _, _ = self.vq(k)
+        v, _, _ = self.vq(v)
+
+        attn_out = F.scaled_dot_product_attention(
+            q, k, v,
+            scale = self.scale,
+            is_causal = True
+        )
+
+        # parallel attention + feedforward block
+        # as in PaLM + Gpt-J
+
+        h = F.gelu(x @ ffw1)
+        ff_out = h @ ffw2
+
+        return attn_out + ff_out
+    
+    def forward_with_loss(self, x):
+        wq, wk, wv, ffw1, ffw2 = self.weights
+
+        q = l2norm(x @ wq)
+        k = l2norm(x @ wk)
+        v = x @ wv
+        # quantize keys and values
+        k, _, loss_k= self.vq(k)
+        v, _, loss_v= self.vq(v)
+
+        attn_out = F.scaled_dot_product_attention(
+            q, k, v,
+            scale = self.scale,
+            is_causal = True
+        )
+
+        # parallel attention + feedforward block
+        # as in PaLM + Gpt-J
+
+        h = F.gelu(x @ ffw1)
+        ff_out = h @ ffw2
+
+        return attn_out + ff_out, loss_k + loss_v
+    
+
+
+class QuantizedMemoryMLP(Module):
+    def __init__(
+        self,
+        dim,
+        depth,
+        expansion_factor = 2.,
+        codebook_size = 64,
+        codebook_dim = 4
+    ):
+        super().__init__()
+        dim_hidden = int(dim * expansion_factor)
+        dims = (dim, *((dim_hidden,) * (depth - 1)), dim)
+
+        self.weights = ParameterList([Parameter(torch.randn(dim_in, dim_out)) for dim_in, dim_out in zip(dims[:-1], dims[1:])])
+
+        for weight in self.weights:
+            nn.init.xavier_uniform_(weight)
+        
+        self.vq = vq.VectorQuantize(dim, codebook_size=codebook_size, codebook_dim=codebook_dim)
+
+    def forward(
+        self,
+        x
+    ):
+        for ind, weight in enumerate(self.weights):
+            is_first = ind == 0
+
+            if not is_first:
+                x = F.gelu(x)
+
+            x = x @ weight
+        x, _, _ = self.vq(x)
+
+        return x
+    
+    def forward_with_loss(self, x):
+        for ind, weight in enumerate(self.weights):
+            is_first = ind == 0
+
+            if not is_first:
+                x = F.gelu(x)
+
+            x = x @ weight
+        x, _, loss = self.vq(x)
+
+        return x, loss
